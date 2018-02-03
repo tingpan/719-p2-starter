@@ -1,0 +1,8 @@
+data
+data/**
+*.pem
+test_env
+test_env/**
+wet.paths
+wet.paths.*
+spark-ec2-setup

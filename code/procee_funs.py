@@ -29,7 +29,6 @@ def remove_invalid_token(document):
     valid_words = [w for w in words if pattern.match(w)]
     return valid_words
 
-
 def count_freq(words):
     d = dict()
     for w in words:
@@ -38,6 +37,9 @@ def count_freq(words):
         else:
             d[w] = (1, 1)
     return d
+
+
+def screen_list()
 
 
 def main():

@@ -6,3 +6,4 @@ test_env/**
 wet.paths
 wet.paths.*
 spark-ec2-setup
+.vscode

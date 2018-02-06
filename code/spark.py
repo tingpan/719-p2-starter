@@ -265,8 +265,8 @@ def gen_word_map(rdd):
 # Generate the process corups from doc
 #       - input: rdd with format [(word, [word_count, doc_freq])]
 #       - return: [(word_index, word_count)]
-def gen_corups(doc, word_dict):
-    corups_list = map(lambda x: "{}:{}".format(word_dict[x[0]], x[1][0]), doc)
+def gen_corups(doc, bc_word_dict):
+    corups_list = map(lambda x: "{}:{}".format(bc_word_dict.value[x[0]], x[1][0]), doc)
     return ",".join(corups_list)
 
 # Generate the document length statics from the doc
@@ -317,8 +317,9 @@ def do_statics(sc):
     freq_list = sorted_freq_rdd.collect()
     statics["words"] = len(freq_list)
 
+    bc_word_map = sc.broadcast(word_map)
     # save the processed corups
-    word_freq_rdd.map(lambda x : gen_corups(x, word_map)).saveAsTextFile(CORPUS_PATH)
+    word_freq_rdd.map(lambda x : gen_corups(x, bc_word_map)).saveAsTextFile(CORPUS_PATH)
 
     # statics the document length
     len_stat = gen_length_statics(screen_domain_rdd, statics["docs"])

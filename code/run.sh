@@ -10,7 +10,7 @@ CORPUS_PATH="/processed_corpus"
 # remove the pre-processed corpus first
 ~/hadoop/bin/hdfs dfs -rm -r $CORPUS_PATH
 
-# run the spark program
+# run the spark program with correct parallelism level
 ~/spark/bin/spark-submit  \
   --name "15719.Project2" \
   --driver-memory 10g \

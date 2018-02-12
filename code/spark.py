@@ -1,8 +1,13 @@
 # spark.py 
 # author - Ting Pan
 # This file contain the function which process the document and do the statics
+# The basic ideas for optimization are
+#   - use correct partition to avoid memory error
+#   - use repartition to balance the workload
+#   - reduce the reduceByKey operation by generate 
+#     the (word, count) tuple for each document at the begining.
 
-# Imports
+#Imports
 from pyspark import SparkConf, SparkContext, StorageLevel
 from collections import Counter
 import sys
@@ -154,7 +159,7 @@ def merge_statics(x, y):
 
 # Write the result in the given ouput folder
 #       - input: (static_dict, frequency_list)
-def write_result(statics, doc_freq_list, word_count_map):
+def write_result(statics, doc_freq_list, token_count_map):
     
     # make the output folder
     os.system("mkdir " + PARAMS["output_dir"])
@@ -170,7 +175,7 @@ def write_result(statics, doc_freq_list, word_count_map):
 
     linum = 0
     for (word, doc_freq) in doc_freq_list:
-        frequency.write("{}\t{}\t{}\n".format(word, word_count_map[word], doc_freq))
+        frequency.write("{}\t{}\t{}\n".format(word, token_count_map[word], doc_freq))
         dictionary.write("{}\t{}\n".format(word, linum))
         linum += 1
 
@@ -242,7 +247,7 @@ def gen_corups(doc, bc_word_dict):
 # Generate the document frequency tuple sorted by alphbet order
 #       - input: rdd with format [[(word, count)]] 
 #       - return: [(word, doc_freq)]
-def gen_sorted_frequency_list(rdd):
+def gen_sorted_frequency_list(rdd, doc_count):
     return (rdd.flatMap(count_doc_freq)
                 .reduceByKey(lambda x, y: x + y)
                 .filter(lambda x: x[1] < 0.9 * doc_count and x[1] >= PARAMS["low_freq"])
@@ -299,7 +304,7 @@ def do_statics(sc):
     doc_count = valid_eng_rdd.count()
 
     # generate the sorted document frequency rdd
-    sorted_doc_freq_list = gen_sorted_frequency_list(valid_eng_rdd)
+    sorted_doc_freq_list = gen_sorted_frequency_list(valid_eng_rdd, doc_count)
 
     # generate the document frequency list sorted by alphabet order
     include_set = set([w[0] for w in sorted_doc_freq_list])
@@ -309,7 +314,7 @@ def do_statics(sc):
     screen_domain_rdd = gen_screen_domian_set(valid_eng_rdd, bc_include_set)
 
     # count the token frequency in each document and collect as map
-    word_count_map = gen_word_count_map(screen_domain_rdd)
+    token_count_map = gen_word_count_map(screen_domain_rdd)
 
     # generate the word=>index map
     word_map = gen_word_index_map(sorted_doc_freq_list)
@@ -334,7 +339,7 @@ def do_statics(sc):
     statics["avg_len"] = int(statics["tokens"] / statics["docs"])
 
     # write the result to the local dictionary
-    write_result(statics, sorted_doc_freq_list, word_count_map)
+    write_result(statics, sorted_doc_freq_list, token_count_map)
 
 if __name__ == "__main__":
     

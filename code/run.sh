@@ -13,7 +13,7 @@ CORPUS_PATH="/processed_corpus"
 # run the spark program
 ~/spark/bin/spark-submit  \
   --name "15719.Project2" \
-  --driver-memory 8g \
-  --executor-memory 8g \
-  --conf "spark.default.parallelism=$5" \
+  --driver-memory 10g \
+  --executor-memory 10g \
+  --conf "spark.default.parallelism=$((4*$5))" \
   ./spark.py $1 $2 $3 $4 $5 $6

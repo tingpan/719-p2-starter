@@ -4,6 +4,7 @@
 
 # Imports
 from pyspark import SparkConf, SparkContext, StorageLevel
+from collections import Counter
 import sys
 import os
 import errno
@@ -73,51 +74,46 @@ def extract_docs(path):
 #       - input: word list of each document
 #       - return: [(word, 1) for each word in the document]
 def count_doc_freq(word_list):
-    result = []
-    visited = set()
-    for w in word_list:
-        if w not in visited:
-            visited.add(w)
-            result.append((w, 1))
-    return result
+    return [(w[0], 1) for w in word_list]
+
+
+# Count the document length for each document
+#       - input: [(word, count)] of each document
+#       - return: document length
+def count_length(doc):
+    res = 0
+    for (w, c) in doc:
+        res += c
+    return res
 
 
 # Count the document frequency and the words count for each word
 #       - input: word list of each document
 #       - return: [(word, [word_count, 1]) for each word in the document]
-def count_doc_term_freq(word_list):
-    counted_word = {}
-
-    # count the document freq and word count within one doc
-    for word in word_list:
-        if word not in counted_word:
-            counted_word[word] = 1
-        else:
-            counted_word[word] = counted_word[word] + 1
-
-    return list(map(lambda x: (x, [counted_word[x], 1]), counted_word))
+def count_term_freq(word_list):
+    return list(Counter(word_list).items())
 
 
 # Remove invalid english word for each document
 #       - input: document
 #       - return: [word for each valid english]
-def remove_invalid_token(document):
+def remove_invalid_words(doc):
     
-    # split the word by whitespace
-    words = document.split()
-
+    word_list = doc.split()
+    
     # result list
-    valid_words = []
+    valid_counter = Counter()
 
     # regexp for valid english word
     pattern = re.compile("^[-'\"]*[a-zA-Z\-']+[-'\"]*$")
 
-    for w in words:
+    for w in word_list:
         if pattern.match(w):
             trip_w = w.strip("-'\"")
             if len(trip_w) > 0:
-                valid_words.append(trip_w.lower())
-    return valid_words
+                valid_counter[trip_w.lower()] += 1
+
+    return valid_counter.items()
 
 
 # Generate the statics fact for each document, used as map function
@@ -158,7 +154,7 @@ def merge_statics(x, y):
 
 # Write the result in the given ouput folder
 #       - input: (static_dict, frequency_list)
-def write_result(statics, freq):
+def write_result(statics, doc_freq_list, word_count_map):
     
     # make the output folder
     os.system("mkdir " + PARAMS["output_dir"])
@@ -173,8 +169,8 @@ def write_result(statics, freq):
     frequency = open(freq_path, "w+")
 
     linum = 0
-    for (word, freq) in freq:
-        frequency.write("{}\t{}\t{}\n".format(word, freq[0], freq[1]))
+    for (word, doc_freq) in doc_freq_list:
+        frequency.write("{}\t{}\t{}\n".format(word, word_count_map[word], doc_freq))
         dictionary.write("{}\t{}\n".format(word, linum))
         linum += 1
 
@@ -219,65 +215,69 @@ def gen_doc_from_name(sc, name_list):
 
 # Remove the invalid english word from docs
 #       - input: rdd with format [doc]
-#       - return: rdd with format [[word of each doc]] 
+#       - return: rdd with format [[(word, count)]] 
 def gen_screen_invalid_word(rdd, bc_stop_set):
-    return (rdd.map(remove_invalid_token)
-                .filter(lambda x: len(x) > AFTER_VALID_THREAD)
-                .repartition(PARTITION_SIZE)
-                .map(lambda doc: [w for w in doc if w not in bc_stop_set.value])
-                .cache())
-
-# Generate the domain set from rdd and total document
-#       - input: rdd with format [[word of each doc]], document_count
-#       - return: set(domain_word)
-def gen_domian_set(rdd, doc_count):
-    res_rdd = (rdd.flatMap(count_doc_freq)
-                .reduceByKey(lambda x, y: x + y)
-                .filter(lambda x: x[1] >= 0.9 * doc_count or x[1] < PARAMS["low_freq"])
-                .map(lambda x: x[0]))
-    return set(res_rdd.collect())
+    return (rdd.map(remove_invalid_words)
+                .filter(lambda doc: count_length(doc) > AFTER_VALID_THREAD)
+                .map(lambda doc: [w for w in doc if w[0] not in bc_stop_set.value])
+                .persist(StorageLevel.MEMORY_AND_DISK))
 
 # Remove the domain set from the word list
-#       - input: rdd with format [[word of each doc]]
-#       - return: rdd with format [[word of each doc]]
-def gen_screen_domian_set(rdd, bc_domain_set):
-    return (rdd.map(lambda doc: [w for w in doc if w not in bc_domain_set.value])
-                .filter(lambda x: len(x) > AFTER_SCREEN_THREAD)
-                .cache())        
-
-# Generate the frequency rdd sorted with alphabet order
-#       - input: rdd with format [(word, [word_count, doc_freq])]
-#       - return: sorted rdd with format [(word, [word_count, doc_freq])]
-def gen_sorted_frequency(rdd):
-    return (rdd.flatMap(lambda x: x)
-                .reduceByKey(lambda x, y: [x[0] + y[0], x[1] + y[1]])
-                .sortByKey(True)
-                .cache())
-
-# Generate the word => index map  
-#       - input: rdd with format [((word, [word_count, doc_freq]), index)]
-#       - return: sorted rdd with format {(word, index)} 
-def gen_word_map(rdd):
-    return (rdd.zipWithIndex()
-                .map(lambda x: (x[0][0], x[1]))
-                .collectAsMap())
+#       - input: rdd with format [[(word, count)]] 
+#       - return: rdd with format [[(word, count)]] 
+def gen_screen_domian_set(rdd, bc_include_set):
+    return (rdd.map(lambda doc: [w for w in doc if w[0] in bc_include_set.value])
+                .filter(lambda doc: count_length(doc) > AFTER_SCREEN_THREAD)
+                .repartition(PARTITION_SIZE)
+                .persist(StorageLevel.MEMORY_AND_DISK))        
+                
 
 # Generate the process corups from doc
-#       - input: rdd with format [(word, [word_count, doc_freq])]
+#       - input: rdd with format [[(word, count)]] 
 #       - return: [(word_index, word_count)]
 def gen_corups(doc, bc_word_dict):
-    corups_list = map(lambda x: "{}:{}".format(bc_word_dict.value[x[0]], x[1][0]), doc)
+    corups_list = map(lambda x: "{}:{}".format(bc_word_dict.value[x[0]], x[1]), doc)
     return ",".join(corups_list)
+
+# Generate the document frequency tuple sorted by alphbet order
+#       - input: rdd with format [[(word, count)]] 
+#       - return: [(word, doc_freq)]
+def gen_sorted_frequency_list(rdd):
+    return (rdd.flatMap(count_doc_freq)
+                .reduceByKey(lambda x, y: x + y)
+                .filter(lambda x: x[1] < 0.9 * doc_count and x[1] >= PARAMS["low_freq"])
+                .sortByKey(True)
+                .collect())
 
 # Generate the document length statics from the doc
 #       - input: rdd with format [word_list]
 #       - return: {static_result}
 def gen_length_statics(rdd, total_docs):
-    return (rdd.map(lambda x: len(x))
+    return (rdd.map(count_length)
                 .sortBy(lambda x: x)
                 .zipWithIndex()
                 .map(lambda x: gen_statics(x, total_docs))
                 .reduce(merge_statics))
+
+# Generate the token frequency map
+#       - input: rdd with format [[(word, count)]] 
+#       - return: {word: token_freq}
+def gen_word_count_map(rdd):
+    return  (rdd.flatMap(lambda x: x)
+                .reduceByKey(lambda x, y: x + y)
+                .collectAsMap())
+
+# Generate the word index map with sorted frequency
+#       - input: rdd with format [(word, freq)] 
+#       - return: {word: index}
+def gen_word_index_map(freq_list):
+    word_dict = {}
+    linum = 0
+    for (word, freq) in freq_list:
+        word_dict[word] = linum
+        linum += 1
+    return word_dict
+
 
 # The main logic which process the document and generate the result
 def do_statics(sc):
@@ -297,30 +297,35 @@ def do_statics(sc):
     
     # generate the domain specific and low freq word set
     doc_count = valid_eng_rdd.count()
-    domain_set = gen_domian_set(valid_eng_rdd, doc_count)
+
+    # generate the sorted document frequency rdd
+    sorted_doc_freq_list = gen_sorted_frequency_list(valid_eng_rdd)
+
+    # generate the document frequency list sorted by alphabet order
+    include_set = set([w[0] for w in sorted_doc_freq_list])
 
     # remove domain and low freq words
-    bc_domain_set = sc.broadcast(domain_set)
-    screen_domain_rdd = gen_screen_domian_set(valid_eng_rdd, bc_domain_set)
+    bc_include_set = sc.broadcast(include_set)
+    screen_domain_rdd = gen_screen_domian_set(valid_eng_rdd, bc_include_set)
+
+    # count the token frequency in each document and collect as map
+    word_count_map = gen_word_count_map(screen_domain_rdd)
+
+    # generate the word=>index map
+    word_map = gen_word_index_map(sorted_doc_freq_list)
+    bc_word_map = sc.broadcast(word_map)
+
+    # save the processed corups
+    (screen_domain_rdd
+        .map(lambda x : gen_corups(x, bc_word_map))
+        .saveAsTextFile(CORPUS_PATH))
+
+    # get the total word count
+    statics["words"] = len(sorted_doc_freq_list)
 
     # count the document count
-    statics["docs"] = screen_domain_rdd.count()
-
-    # count the term frequency and the document frequency.
-    word_freq_rdd = screen_domain_rdd.map(count_doc_term_freq).cache()
-    sorted_freq_rdd = gen_sorted_frequency(word_freq_rdd)
+    statics["docs"] = screen_domain_rdd.count() 
     
-    # collect the word => index map
-    word_map = gen_word_map(sorted_freq_rdd)
-
-    # collect the frequency result from rdd
-    freq_list = sorted_freq_rdd.collect()
-    statics["words"] = len(freq_list)
-
-    bc_word_map = sc.broadcast(word_map)
-    # save the processed corups
-    word_freq_rdd.map(lambda x : gen_corups(x, bc_word_map)).saveAsTextFile(CORPUS_PATH)
-
     # statics the document length
     len_stat = gen_length_statics(screen_domain_rdd, statics["docs"])
 
@@ -329,8 +334,7 @@ def do_statics(sc):
     statics["avg_len"] = int(statics["tokens"] / statics["docs"])
 
     # write the result to the local dictionary
-    write_result(statics, freq_list)
-
+    write_result(statics, sorted_doc_freq_list, word_count_map)
 
 if __name__ == "__main__":
     
@@ -343,9 +347,9 @@ if __name__ == "__main__":
         "cores": int(sys.argv[5]),
         "output_dir": sys.argv[6]
     }
-    
+
     # set the default partition size with number of cores
-    PARTITION_SIZE = PARAMS["cores"]
+    PARTITION_SIZE = 4 * PARAMS["cores"]
 
     # get sc context
     sc = sc = SparkContext()
